@@ -8,6 +8,7 @@ import os
 import time
 import argparse
 import requests
+import json
 from threading import Thread
 
 
@@ -31,7 +32,8 @@ class DouyuTvGift:
         self.__time_start = time_last
         self.__sock = None
         self.__gift = {}
-        self.__buf = []
+        self.__msg_buf = []
+        self.__gift_buf = []
         self.__done = False
         self.__time_last = time_last
         self.__init_connection()
@@ -98,6 +100,7 @@ class DouyuTvGift:
                     Thread(target=self.__record_stream, name="Record_Stream").start()
                     Thread(target=self.__recv_danmaku, name='Recv_Danmaku').start()
                     Thread(target=self.__record_gift, name='Record_Gift').start()
+                    Thread(target=self.__record_msg, name='Record_Gift').start()
                     # 在输入的时间后停止运行
                     time.sleep(self.__time_last * 60)
                     self.__stop()
@@ -150,9 +153,9 @@ class DouyuTvGift:
         # 写礼物信息
         row = 1
         col = 0
-        while not self.__done or len(self.__buf) > 0:
-            if len(self.__buf) > 0:
-                gift = self.__buf.pop(0)
+        while not self.__done or len(self.__gift_buf) > 0:
+            if len(self.__gift_buf) > 0:
+                gift = self.__gift_buf.pop(0)
                 for info in gift:
                     worksheet.write(row, col, info)
                     col += 1
@@ -161,6 +164,25 @@ class DouyuTvGift:
         # 结束写文件
         workbook.close()
         print(">>> 礼物信息已记录完毕")
+
+    def __record_msg(self):
+        """记录所有来自服务器的消息"""
+        log_name = "[%s]" % self.__room_name + time.strftime("%Y-%m-%d@%H-%M-%S", time.localtime(self.__time_start)) \
+                   + ".log"
+        log = open("result/" + log_name, 'w')
+        print(">>> 开始记录服务器发来的消息")
+
+        while not self.__done:
+            try:
+                if len(self.__msg_buf) > 0:
+                    msg = json.dumps(self.__msg_buf.pop(0), ensure_ascii=False) + '\n'
+                    log.write(msg)
+                    log.flush()
+            except:
+                print('>>> 记录消息出错')
+                log.close()
+                self.__stop()
+        log.close()
 
     def __recv_danmaku(self):
         """接收来自弹幕服务器的消息"""
@@ -177,31 +199,34 @@ class DouyuTvGift:
                 if int.from_bytes(data[8:10], byteorder='little') == 690:
                     try:
                         msg = self.depacket(data)
+                        timestamp = time.time()  # 收到礼物的时间
+                        offset = int(timestamp - self.__time_start)  # 和视频开始时间的差距
+                        t = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp))  # 人类易读的日期格式
+                        msg['zyh_timestamp'] = timestamp
+                        msg['zyh_offset'] = offset
+                        self.__msg_buf.append(msg)
+
                         if msg['type'] == 'dgb':  # 礼物消息
-                                # 获得需要记录的礼物相关信息
-                                timestamp = time.time()  # 收到礼物的时间
-                                t = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp))  # 人类易读的日期格式
-                                offset = int(timestamp - self.__time_start)  # 和视频开始时间的差距
-                                gfid = str(msg['gfid'])
-                                name = self.__gift[gfid]['name']
-                                price = self.__gift[gfid]['price']
-                                try:
-                                    count = msg['gfcnt']
-                                except KeyError:
-                                    count = 1
-                                # 将信息保存到缓存区中
-                                self.__buf.append([name, count, price, t, offset])
-                                t = time.strftime("%H:%M:%S", time.localtime(timestamp))
-                                print('[%s] @%s 送出礼物 %s%s个, 单个价值%s' % (t, msg['nn'], name, count, price))
+                            # 获得需要记录的礼物相关信息
+                            gfid = str(msg['gfid'])
+                            name = self.__gift[gfid]['name']
+                            price = self.__gift[gfid]['price']
+                            try:
+                                count = msg['gfcnt']
+                            except KeyError:
+                                count = 1
+                            # 将信息保存到缓存区中
+                            self.__gift_buf.append([name, count, price, t, offset])
+                            print('[%s] @%s 送出礼物 %s%s个, 单个价值%s' % (t, msg['nn'], name, count, price))
                         elif msg['type'] == 'bc_buy_deserve':  # 酬勤消息
                             # 获得需要记录的礼物信息
-                            timestamp = time.time()
-                            t = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp))  # 人类易读的日期格式
-                            offset = int(timestamp - self.__time_start)
                             name = [None, "初级酬勤", "中级酬勤", "高级酬勤"]
                             price = [None, "15元", "30元", "50元"]
                             lev = msg['lev']
-                            self.__buf.append([name[lev], msg['cnt'], price[lev], t, offset])
+                            self.__gift_buf.append([name[lev], msg['cnt'], price[lev], t, offset])
+                        elif msg['type'] == 'rss' and msg['ss'] == 0:  # 关播提醒
+                            print(">>> 主播已经下播，记录自动停止...")
+                            self.__stop()
                     except (KeyError, UnicodeDecodeError):
                         pass
             except ConnectionAbortedError:
