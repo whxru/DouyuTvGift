@@ -180,8 +180,6 @@ class DouyuTvGift:
                     log.flush()
             except:
                 print('>>> 记录消息出错')
-                log.close()
-                self.__stop()
         log.close()
 
     def __recv_danmaku(self):
